@@ -21,13 +21,6 @@ jobs:
       - name: Pull Docker image
         run: docker pull docker.io/mstrph28/sts-apimaya:latest
 
-      - name: Inspect image metadata
-        run: |
-          echo "--- Exposed Ports ---"
-          docker inspect docker.io/mstrph28/sts-apimaya:latest | jq -r '.[0].Config.ExposedPorts // "none listed"'
-          echo "--- Env Vars ---"
-          docker inspect docker.io/mstrph28/sts-apimaya:latest | jq -r '.[0].Config.Env[]'
-
       - name: Run VLESS container
         run: |
           docker run -d \
@@ -61,19 +54,13 @@ jobs:
           echo "Raw response:"
           echo "$RESPONSE"
 
-          # Parse each value
-          UUID=$(echo "$RESPONSE"       | grep -oP 'UUID:\s*\K[\w-]+')
-          PATH_SUFFIX=$(echo "$RESPONSE" | grep -oP 'PATH_SUFFIX:\s*\K\w+')
-          VLESS_PATH=$(echo "$RESPONSE"  | grep -oP 'VLESS_PATH:\s*\K\S+')
-          VMESS_PATH=$(echo "$RESPONSE"  | grep -oP 'VMESS_PATH:\s*\S+' | awk '{print $2}')
-          TROJAN_PATH=$(echo "$RESPONSE" | grep -oP 'TROJAN_PATH:\s*\S+' | awk '{print $2}')
-          SS_PATH=$(echo "$RESPONSE"     | grep -oP 'SS_PATH:\s*\S+' | awk '{print $2}')
-
-          echo "uuid=$UUID"             >> $GITHUB_OUTPUT
-          echo "vless_path=$VLESS_PATH" >> $GITHUB_OUTPUT
-          echo "vmess_path=$VMESS_PATH" >> $GITHUB_OUTPUT
-          echo "trojan_path=$TROJAN_PATH" >> $GITHUB_OUTPUT
-          echo "ss_path=$SS_PATH"       >> $GITHUB_OUTPUT
+          # Parse each value (using awk for reliable field extraction)
+          UUID=$(echo "$RESPONSE"        | awk '/^UUID:/        {print $2}')
+          PATH_SUFFIX=$(echo "$RESPONSE" | awk '/^PATH_SUFFIX:/ {print $2}')
+          VLESS_PATH=$(echo "$RESPONSE"  | awk '/^VLESS_PATH:/  {print $2}')
+          VMESS_PATH=$(echo "$RESPONSE"  | awk '/^VMESS_PATH:/  {print $2}')
+          TROJAN_PATH=$(echo "$RESPONSE" | awk '/^TROJAN_PATH:/ {print $2}')
+          SS_PATH=$(echo "$RESPONSE"     | awk '/^SS_PATH:/     {print $2}')
 
           echo "--- Parsed ---"
           echo "UUID        : $UUID"
@@ -82,6 +69,23 @@ jobs:
           echo "VMESS_PATH  : $VMESS_PATH"
           echo "TROJAN_PATH : $TROJAN_PATH"
           echo "SS_PATH     : $SS_PATH"
+
+          # Write to GITHUB_OUTPUT using heredoc to safely handle slashes
+          {
+            echo "uuid=$UUID"
+            echo "vless_path<<DELIM"
+            echo "$VLESS_PATH"
+            echo "DELIM"
+            echo "vmess_path<<DELIM"
+            echo "$VMESS_PATH"
+            echo "DELIM"
+            echo "trojan_path<<DELIM"
+            echo "$TROJAN_PATH"
+            echo "DELIM"
+            echo "ss_path<<DELIM"
+            echo "$SS_PATH"
+            echo "DELIM"
+          } >> $GITHUB_OUTPUT
 
       - name: Install cloudflared
         run: |
@@ -124,21 +128,18 @@ jobs:
 
           PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$VLESS_PATH")
 
-          VLESS_LINK="vless://${UUID}@google.com:443?encryption=none&security=tls&sni=${SNI}&type=ws&host=${PROXY_HOST}&path=${PATH_ENC}&fp=chrome#${SERVICE_NAME}-VLESS"
-          VMESS_PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$VMESS_PATH")
-          TROJAN_PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$TROJAN_PATH")
+          VLESS_LINK="vless://${UUID}@${HOST}:443?encryption=none&security=tls&sni=${SNI}&type=ws&host=${PROXY_HOST}&path=${PATH_ENC}&fp=chrome#${SERVICE_NAME}"
 
           echo "======================================"
           echo "SERVICE     : $SERVICE_NAME"
           echo "TUNNEL URL  : $TUNNEL_URL"
-          echo "HOST        : $HOST"
           echo "UUID        : $UUID"
           echo "SNI         : $SNI"
           echo "PROXY HOST  : $PROXY_HOST:443"
           echo "======================================"
           echo "VLESS LINK  :"
           echo "$VLESS_LINK"
-          echo ""
+          echo "--------------------------------------"
           echo "VMESS PATH  : $VMESS_PATH"
           echo "TROJAN PATH : $TROJAN_PATH"
           echo "SS PATH     : $SS_PATH"
