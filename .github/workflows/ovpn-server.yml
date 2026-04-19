@@ -1,0 +1,184 @@
+name: OpenVPN Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: "Client/service name (no spaces)"
+        required: true
+        default: "my-client"
+      port:
+        description: "OpenVPN TCP port inside container"
+        required: false
+        default: "1194"
+
+jobs:
+  run-ovpn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openvpn easy-rsa curl unzip
+
+      - name: Install ngrok
+        run: |
+          curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
+          tar -xzf ngrok.tgz
+          sudo mv ngrok /usr/local/bin/ngrok
+          ngrok version
+
+      - name: Authenticate ngrok
+        run: ngrok authtoken ${{ secrets.NGROK_TOKEN }}
+
+      - name: Setup PKI with Easy-RSA
+        run: |
+          make-cadir ~/openvpn-ca
+          cd ~/openvpn-ca
+
+          cat > vars << 'EOF'
+          set_var EASYRSA_ALGO       ec
+          set_var EASYRSA_DIGEST     sha512
+          set_var EASYRSA_CERT_EXPIRE 3650
+          EOF
+
+          ./easyrsa init-pki
+          echo "GH-OpenVPN-CA" | ./easyrsa build-ca nopass
+          ./easyrsa gen-dh
+          ./easyrsa build-server-full server nopass
+          ./easyrsa build-client-full ${{ github.event.inputs.service_name }} nopass
+          openvpn --genkey secret ~/openvpn-ca/pki/ta.key
+
+      - name: Write server config
+        run: |
+          sudo mkdir -p /etc/openvpn/server
+          cd ~/openvpn-ca
+
+          sudo cp pki/ca.crt              /etc/openvpn/server/
+          sudo cp pki/issued/server.crt   /etc/openvpn/server/
+          sudo cp pki/private/server.key  /etc/openvpn/server/
+          sudo cp pki/dh.pem              /etc/openvpn/server/
+          sudo cp pki/ta.key              /etc/openvpn/server/
+
+          sudo tee /etc/openvpn/server/server.conf > /dev/null << 'EOF'
+          proto tcp
+          port 1194
+          dev tun
+          ca   /etc/openvpn/server/ca.crt
+          cert /etc/openvpn/server/server.crt
+          key  /etc/openvpn/server/server.key
+          dh   /etc/openvpn/server/dh.pem
+          tls-auth /etc/openvpn/server/ta.key 0
+          server 10.8.0.0 255.255.255.0
+          push "redirect-gateway def1 bypass-dhcp"
+          push "dhcp-option DNS 1.1.1.1"
+          push "dhcp-option DNS 8.8.8.8"
+          keepalive 10 120
+          cipher AES-256-GCM
+          auth SHA256
+          persist-key
+          persist-tun
+          verb 3
+          EOF
+
+      - name: Enable IP forwarding and NAT
+        run: |
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+
+      - name: Start OpenVPN server
+        run: |
+          sudo openvpn --config /etc/openvpn/server/server.conf --daemon
+          sleep 5
+          sudo cat /var/log/syslog | grep -i openvpn | tail -20 || true
+
+      - name: Start ngrok TCP tunnel
+        run: |
+          ngrok tcp ${{ github.event.inputs.port }} \
+            --log /tmp/ngrok.log \
+            --log-format json &
+          sleep 8
+
+      - name: Generate .ovpn client config
+        run: |
+          # Get ngrok public address
+          NGROK_ADDR=$(curl -sf http://localhost:4040/api/tunnels \
+            | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          addr = data['tunnels'][0]['public_url'].replace('tcp://', '')
+          print(addr)
+          ")
+
+          if [ -z "$NGROK_ADDR" ]; then
+            echo "ERROR: Could not get ngrok address. Log:"
+            cat /tmp/ngrok.log
+            exit 1
+          fi
+
+          NGROK_HOST=$(echo "$NGROK_ADDR" | cut -d: -f1)
+          NGROK_PORT=$(echo "$NGROK_ADDR" | cut -d: -f2)
+          CLIENT="${{ github.event.inputs.service_name }}"
+
+          echo "Tunnel address: $NGROK_HOST:$NGROK_PORT"
+
+          # Build inline .ovpn file
+          cat > ~/${CLIENT}.ovpn << EOF
+          client
+          dev tun
+          proto tcp
+          remote $NGROK_HOST $NGROK_PORT
+          resolv-retry infinite
+          nobind
+          persist-key
+          persist-tun
+          cipher AES-256-GCM
+          auth SHA256
+          verb 3
+          key-direction 1
+          <ca>
+          $(cat ~/openvpn-ca/pki/ca.crt)
+          </ca>
+          <cert>
+          $(openssl x509 -in ~/openvpn-ca/pki/issued/${CLIENT}.crt)
+          </cert>
+          <key>
+          $(cat ~/openvpn-ca/pki/private/${CLIENT}.key)
+          </key>
+          <tls-auth>
+          $(cat ~/openvpn-ca/pki/ta.key)
+          </tls-auth>
+          EOF
+
+          echo "======================================"
+          echo "SERVICE  : $CLIENT"
+          echo "ADDRESS  : $NGROK_HOST"
+          echo "PORT     : $NGROK_PORT"
+          echo "PROTO    : TCP"
+          echo "======================================"
+          echo ""
+          echo "---- .ovpn file (copy everything below) ----"
+          cat ~/${CLIENT}.ovpn
+          echo "---- end of .ovpn ----"
+
+      - name: Upload .ovpn as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.service_name }}-ovpn
+          path: ~/${{ github.event.inputs.service_name }}.ovpn
+          retention-days: 1
+
+      - name: Keep alive
+        run: |
+          while true; do
+            OVPN_PID=$(pgrep openvpn || echo "dead")
+            echo "[$(date -u +%H:%M:%S)] OpenVPN PID: $OVPN_PID"
+            if [ "$OVPN_PID" = "dead" ]; then
+              echo "OpenVPN stopped. Syslog tail:"
+              sudo tail -30 /var/log/syslog | grep -i openvpn
+              exit 1
+            fi
+            sleep 60
+          done
