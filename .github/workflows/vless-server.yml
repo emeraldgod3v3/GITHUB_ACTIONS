@@ -11,10 +11,6 @@ on:
         description: "Container port to expose"
         required: false
         default: "8080"
-      ws_path:
-        description: "WebSocket path e.g. /vless"
-        required: false
-        default: "/"
 
 jobs:
   run-vless:
@@ -22,34 +18,70 @@ jobs:
     timeout-minutes: 355
 
     steps:
-      - name: Generate UUID
-        id: uuid
-        run: |
-          UUID=$(uuidgen)
-          echo "uuid=$UUID" >> $GITHUB_OUTPUT
-          echo "Generated UUID: $UUID"
-
       - name: Pull Docker image
-        run: docker pull docker.io/jericoo/jerico
+        run: docker pull docker.io/mstrph28/sts-apimaya:latest
 
       - name: Inspect image metadata
         run: |
           echo "--- Exposed Ports ---"
-          docker inspect docker.io/jericoo/jerico | jq -r '.[0].Config.ExposedPorts // "none listed"'
+          docker inspect docker.io/mstrph28/sts-apimaya:latest | jq -r '.[0].Config.ExposedPorts // "none listed"'
           echo "--- Env Vars ---"
-          docker inspect docker.io/jericoo/jerico | jq -r '.[0].Config.Env[]'
+          docker inspect docker.io/mstrph28/sts-apimaya:latest | jq -r '.[0].Config.Env[]'
 
       - name: Run VLESS container
         run: |
           docker run -d \
             --name vless \
-            -e UUID=${{ steps.uuid.outputs.uuid }} \
             -p ${{ github.event.inputs.port }}:${{ github.event.inputs.port }} \
-            docker.io/jericoo/jerico
-          sleep 6
+            docker.io/mstrph28/sts-apimaya:latest
+          sleep 8
 
       - name: Container logs
         run: docker logs vless
+
+      - name: Fetch config from /pass route
+        id: config
+        run: |
+          PORT=${{ github.event.inputs.port }}
+
+          echo "Fetching config from http://localhost:${PORT}/pass ..."
+          for i in $(seq 1 10); do
+            RESPONSE=$(curl -sf http://localhost:${PORT}/pass || true)
+            if [ -n "$RESPONSE" ]; then break; fi
+            echo "Attempt $i failed, retrying in 3s..."
+            sleep 3
+          done
+
+          if [ -z "$RESPONSE" ]; then
+            echo "ERROR: Could not reach /pass endpoint. Container logs:"
+            docker logs vless
+            exit 1
+          fi
+
+          echo "Raw response:"
+          echo "$RESPONSE"
+
+          # Parse each value
+          UUID=$(echo "$RESPONSE"       | grep -oP 'UUID:\s*\K[\w-]+')
+          PATH_SUFFIX=$(echo "$RESPONSE" | grep -oP 'PATH_SUFFIX:\s*\K\w+')
+          VLESS_PATH=$(echo "$RESPONSE"  | grep -oP 'VLESS_PATH:\s*\K\S+')
+          VMESS_PATH=$(echo "$RESPONSE"  | grep -oP 'VMESS_PATH:\s*\S+' | awk '{print $2}')
+          TROJAN_PATH=$(echo "$RESPONSE" | grep -oP 'TROJAN_PATH:\s*\S+' | awk '{print $2}')
+          SS_PATH=$(echo "$RESPONSE"     | grep -oP 'SS_PATH:\s*\S+' | awk '{print $2}')
+
+          echo "uuid=$UUID"             >> $GITHUB_OUTPUT
+          echo "vless_path=$VLESS_PATH" >> $GITHUB_OUTPUT
+          echo "vmess_path=$VMESS_PATH" >> $GITHUB_OUTPUT
+          echo "trojan_path=$TROJAN_PATH" >> $GITHUB_OUTPUT
+          echo "ss_path=$SS_PATH"       >> $GITHUB_OUTPUT
+
+          echo "--- Parsed ---"
+          echo "UUID        : $UUID"
+          echo "PATH_SUFFIX : $PATH_SUFFIX"
+          echo "VLESS_PATH  : $VLESS_PATH"
+          echo "VMESS_PATH  : $VMESS_PATH"
+          echo "TROJAN_PATH : $TROJAN_PATH"
+          echo "SS_PATH     : $SS_PATH"
 
       - name: Install cloudflared
         run: |
@@ -81,29 +113,36 @@ jobs:
           fi
 
           HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
-          UUID="${{ steps.uuid.outputs.uuid }}"
-          WS_PATH="${{ github.event.inputs.ws_path }}"
+          UUID="${{ steps.config.outputs.uuid }}"
+          VLESS_PATH="${{ steps.config.outputs.vless_path }}"
+          VMESS_PATH="${{ steps.config.outputs.vmess_path }}"
+          TROJAN_PATH="${{ steps.config.outputs.trojan_path }}"
+          SS_PATH="${{ steps.config.outputs.ss_path }}"
           SERVICE_NAME="${{ github.event.inputs.service_name }}"
           SNI="api.paymaya.com"
           PROXY_HOST="google.com"
-          PROXY_PORT="443"
-          PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$WS_PATH")
 
-          VLESS_LINK="vless://${UUID}@${HOST}:443?encryption=none&security=tls&sni=${SNI}&type=ws&host=${PROXY_HOST}&path=${PATH_ENC}&fp=chrome#${SERVICE_NAME}"
+          PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$VLESS_PATH")
 
-          echo "--------------------------------------"
-          echo "SERVICE    : $SERVICE_NAME"
-          echo "TUNNEL URL : $TUNNEL_URL"
-          echo "HOST       : $HOST"
-          echo "PORT       : 443 (TLS via cloudflared)"
-          echo "UUID       : $UUID"
-          echo "WS PATH    : $WS_PATH"
-          echo "SNI        : $SNI"
-          echo "PROXY HOST : $PROXY_HOST:$PROXY_PORT"
-          echo "--------------------------------------"
-          echo "VLESS LINK :"
+          VLESS_LINK="vless://${UUID}@google.com:443?encryption=none&security=tls&sni=${SNI}&type=ws&host=${PROXY_HOST}&path=${PATH_ENC}&fp=chrome#${SERVICE_NAME}-VLESS"
+          VMESS_PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$VMESS_PATH")
+          TROJAN_PATH_ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$TROJAN_PATH")
+
+          echo "======================================"
+          echo "SERVICE     : $SERVICE_NAME"
+          echo "TUNNEL URL  : $TUNNEL_URL"
+          echo "HOST        : $HOST"
+          echo "UUID        : $UUID"
+          echo "SNI         : $SNI"
+          echo "PROXY HOST  : $PROXY_HOST:443"
+          echo "======================================"
+          echo "VLESS LINK  :"
           echo "$VLESS_LINK"
-          echo "--------------------------------------"
+          echo ""
+          echo "VMESS PATH  : $VMESS_PATH"
+          echo "TROJAN PATH : $TROJAN_PATH"
+          echo "SS PATH     : $SS_PATH"
+          echo "======================================"
 
       - name: Keep alive
         run: |
