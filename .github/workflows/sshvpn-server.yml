@@ -10,7 +10,7 @@ env:
   ENABLE_WS_SSH: "true"
   VPN_DNS_1: "1.1.1.1"
   VPN_DNS_2: "1.0.0.1"
-  PASTEBIN_URL: "https://pastebin.com/raw/XXXXXXXX"   # <-- replace with your raw pastebin URL
+  PASTEBIN_URL: "https://pastebin.com/raw/b73Szgit"   # <-- replace with your raw pastebin URL
 
 on:
   workflow_dispatch:
