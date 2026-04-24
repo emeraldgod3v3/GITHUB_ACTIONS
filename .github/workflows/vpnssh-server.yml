@@ -1,8 +1,8 @@
 name: Create VPN Server
 
 env:
-  SSH_USER: "bilyabits"
-  SSH_PASS: "bilyabits123"
+  SSH_USER: ""
+  SSH_PASS: ""
   OVPN_TCP_PORT: "443"
   OVPN_UDP_PORT: "1194"
   WG_PORT: "51820"
