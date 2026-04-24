@@ -68,13 +68,14 @@ jobs:
           echo "ENA_WG=$ENA_WG" >> $GITHUB_ENV
           echo "ENA_WS=$ENA_WS" >> $GITHUB_ENV
 
-          PUBLIC_IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+          PUBLIC_IFACE=$(ip route | awk '/default/ {print $5}' | head -n1)
           echo "PUBLIC_IFACE=$PUBLIC_IFACE" >> $GITHUB_ENV
 
       - name: IP forwarding + iptables
         run: |
           sudo sysctl -w net.ipv4.ip_forward=1
           sudo sysctl -w net.ipv6.conf.all.forwarding=1
+
           sudo iptables -t nat -A POSTROUTING -o $PUBLIC_IFACE -j MASQUERADE
           sudo iptables -A FORWARD -i tun0 -j ACCEPT
           sudo iptables -A FORWARD -o tun0 -j ACCEPT
@@ -84,25 +85,28 @@ jobs:
       - name: Install packages
         run: |
           sudo apt-get update -qq
-          PKGS="openvpn easy-rsa"
+          PKGS="openvpn easy-rsa openssh-server curl unzip"
           [ "$ENA_WG" = "true" ] && PKGS="$PKGS wireguard"
           [ "$ENA_WS" = "true" ] && PKGS="$PKGS websockify"
           sudo apt-get install -y -qq $PKGS
 
       - name: Create SSH user
         run: |
-          sudo useradd -m -s /bin/bash $FINAL_USER
+          sudo useradd -m -s /bin/bash $FINAL_USER || true
           echo "$FINAL_USER:$FINAL_PASS" | sudo chpasswd
+          sudo systemctl enable ssh
           sudo systemctl restart ssh
 
       - name: Start WebSocket SSH bridge
         if: env.ENA_WS == 'true'
         run: |
-          sudo websockify --daemon 0.0.0.0:$WS_SSH_PORT localhost:22
+          sudo nohup websockify 0.0.0.0:$WS_SSH_PORT localhost:22 > ws.log 2>&1 &
 
       - name: Build PKI
         run: |
-          make-cadir ~/openvpn-ca && cd ~/openvpn-ca
+          make-cadir ~/openvpn-ca
+          cd ~/openvpn-ca
+
           export EASYRSA_BATCH=1
           export EASYRSA_REQ_CN="GH-VPN"
 
@@ -111,52 +115,47 @@ jobs:
           ./easyrsa gen-req server nopass
           ./easyrsa sign-req server server
           ./easyrsa gen-dh
-          openvpn --genkey secret pki/ta.key
+          openvpn --genkey secret ta.key
 
       - name: Configure + start OpenVPN
         run: |
-          sudo openvpn --daemon --config /etc/openvpn/server-tcp.conf || true
+          sudo openvpn --daemon --config /etc/openvpn/server.conf || true
 
       - name: Setup ngrok
         run: |
-          curl -L https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
+          curl -sL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz -o ngrok.tgz
           tar -xzf ngrok.tgz
           sudo mv ngrok /usr/local/bin/
 
           ngrok config add-authtoken "${{ github.event.inputs.ngrok_token }}"
 
-          ngrok tcp 22 &
-          ngrok tcp 443 &
-          ngrok tcp 80 &
+          nohup ngrok tcp 22 > ngrok_22.log 2>&1 &
+          nohup ngrok tcp 443 > ngrok_443.log 2>&1 &
+          nohup ngrok tcp 80 > ngrok_80.log 2>&1 &
 
       - name: Print full VPN details
         run: |
-          sleep 6
+          sleep 8
 
-          NGROK_API=$(curl -s http://127.0.0.1:4040/api/tunnels)
+          API=$(curl -s http://127.0.0.1:4040/api/tunnels)
 
-          get_tunnel () {
-            echo "$NGROK_API" | python3 -c ".
-            import sys,json
-            data=json.load(sys.stdin)
-            for t in data.get('tunnels', []):
-             if '$1' in t.get('name','') or '$1' in t.get('public_url',''):
-             print(t['public_url'].replace('tcp://',''))
-             "
+          get_port() {
+            echo "$API" | python3 - << 'EOF'
+            import sys, json
+
+            data = json.load(sys.stdin)
+            target = sys.argv[1]
+
+            for t in data.get("tunnels", []):
+               url = t.get("public_url", "")
+               if target in url:
+                  print(url.replace("tcp://", ""))
+            EOF
           }
 
-          SSH_ADDR=$(get_tunnel ssh)
-          OVPN_ADDR=$(get_tunnel 443)
-          WS_ADDR=$(get_tunnel 80)
-
-          SSH_HOST=$(echo $SSH_ADDR | cut -d: -f1)
-          SSH_PORT=$(echo $SSH_ADDR | cut -d: -f2)
-
-          OVPN_HOST=$(echo $OVPN_ADDR | cut -d: -f1)
-          OVPN_PORT=$(echo $OVPN_ADDR | cut -d: -f2)
-
-          WS_HOST=$(echo $WS_ADDR | cut -d: -f1)
-          WS_PORT=$(echo $WS_ADDR | cut -d: -f2)
+          SSH_ADDR=$(get_port "22")
+          OVPN_ADDR=$(get_port "443")
+          WS_ADDR=$(get_port "80")
 
           RUNNER_IP=$(curl -s https://ifconfig.me)
 
@@ -170,16 +169,16 @@ jobs:
           echo "Password : $FINAL_PASS"
           echo ""
           echo "SSH (ngrok)"
-          echo "ssh $FINAL_USER@$SSH_HOST -p $SSH_PORT"
+          echo "$SSH_ADDR"
           echo ""
-          echo "OpenVPN (TCP via ngrok)"
-          echo "Remote : $OVPN_HOST $OVPN_PORT"
+          echo "OpenVPN TCP (ngrok)"
+          echo "$OVPN_ADDR"
           echo ""
-          echo "OpenVPN (UDP direct)"
-          echo "Remote : $RUNNER_IP port $OVPN_UDP_PORT"
+          echo "OpenVPN UDP (direct)"
+          echo "$RUNNER_IP:$OVPN_UDP_PORT"
           echo ""
           echo "WebSocket SSH"
-          echo "ws://$WS_HOST:$WS_PORT"
+          echo "$WS_ADDR"
           echo ""
           echo "========================================"
 
