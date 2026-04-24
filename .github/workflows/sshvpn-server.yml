@@ -10,7 +10,7 @@ env:
   ENABLE_WS_SSH: "true"
   VPN_DNS_1: "1.1.1.1"
   VPN_DNS_2: "1.0.0.1"
-  PASTEBIN_URL: "https://pastebin.com/raw/b73Szgit"   # <-- replace with your raw pastebin URL
+  PASTEBIN_URL: "https://pastebin.com/raw/FYLS4adK"   # <-- replace with your raw pastebin URL
 
 on:
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
 
     steps:
 
-      - name: Fetch and run VPN script
+      - name: Fetch Latest Script
         env:
           INPUT_USER: ${{ github.event.inputs.ssh_user }}
           INPUT_PASS: ${{ github.event.inputs.ssh_pass }}
