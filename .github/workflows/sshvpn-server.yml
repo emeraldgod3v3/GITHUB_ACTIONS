@@ -1,4 +1,4 @@
-name: ðŸ” VPN Server
+name: VPN Server
 
 # ============================================================
 #  EASY CUSTOMIZATION â€” edit these variables before running
@@ -7,7 +7,7 @@ env:
   # â”€â”€ User credentials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # Leave SSH_USER / SSH_PASS empty ("") to auto-generate them
   SSH_USER:   "bilyabits"                  # e.g. "cjuser"
-  SSH_PASS:   "bilyabits"                  # e.g. "mypassword"
+  SSH_PASS:   "bilyabits123"                  # e.g. "mypassword"
 
   # â”€â”€ Ports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   OVPN_TCP_PORT:  "443"           # OpenVPN TCP port
