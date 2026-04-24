@@ -51,6 +51,7 @@ jobs:
           NGROK_TOKEN: ${{ github.event.inputs.ngrok_token }}
         run: |
           curl -fsSL "$PASTEBIN_URL" -o /tmp/vpn.sh
+          sed -i 's/\r//' /tmp/vpn.sh
           chmod +x /tmp/vpn.sh
           bash /tmp/vpn.sh
 
