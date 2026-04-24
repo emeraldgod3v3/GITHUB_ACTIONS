@@ -103,6 +103,9 @@ jobs:
       - name: Build PKI
         run: |
           make-cadir ~/openvpn-ca && cd ~/openvpn-ca
+          export EASYRSA_BATCH=1
+          export EASYRSA_REQ_CN="GH-VPN"
+
           ./easyrsa init-pki
           ./easyrsa build-ca nopass
           ./easyrsa gen-req server nopass
